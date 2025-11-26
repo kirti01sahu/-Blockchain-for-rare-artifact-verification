@@ -1,64 +1,132 @@
-
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
 /**
  * @title RareArtifactVerification
  * @dev Smart contract for verifying and tracking rare artifacts on blockchain
+ * @notice Optimized for gas efficiency and enhanced readability
  */
 contract RareArtifactVerification {
     
+    // ============================================
+    // STATE VARIABLES
+    // ============================================
+    
+    /// @notice Admin address with special privileges
+    address public immutable admin;
+    
+    /// @notice Total number of registered artifacts
+    uint256 public artifactCount;
+    
+    /// @notice Mapping of artifact ID to artifact data
+    mapping(uint256 => Artifact) public artifacts;
+    
+    /// @notice Mapping of artifact ID to its ownership history
+    mapping(uint256 => OwnershipHistory[]) public ownershipHistory;
+    
+    /// @notice Mapping of addresses authorized to verify artifacts
+    mapping(address => bool) public authorizedVerifiers;
+    
+    // ============================================
+    // STRUCTS
+    // ============================================
+    
+    /// @notice Artifact data structure
     struct Artifact {
-        uint256 id;
         string name;
         string description;
         string origin;
-        uint256 yearOfCreation;
+        string ipfsHash;
         address currentOwner;
         address verifier;
-        uint256 verificationTimestamp;
+        uint96 yearOfCreation;      // uint96 saves gas vs uint256
+        uint40 verificationTimestamp; // uint40 is sufficient for timestamps
         bool isVerified;
-        string ipfsHash; // For storing images/documents
     }
     
+    /// @notice Ownership transfer record
     struct OwnershipHistory {
         address owner;
-        uint256 timestamp;
-        uint256 price;
+        uint40 timestamp;  // uint40 saves gas vs uint256
+        uint216 price;     // uint216 allows large values while saving gas
     }
     
-    mapping(uint256 => Artifact) public artifacts;
-    mapping(uint256 => OwnershipHistory[]) public ownershipHistory;
-    mapping(address => bool) public authorizedVerifiers;
+    // ============================================
+    // EVENTS
+    // ============================================
     
-    uint256 public artifactCount;
-    address public admin;
+    event ArtifactRegistered(
+        uint256 indexed artifactId, 
+        string name, 
+        address indexed owner
+    );
     
-    event ArtifactRegistered(uint256 indexed artifactId, string name, address indexed owner);
-    event ArtifactVerified(uint256 indexed artifactId, address indexed verifier);
-    event OwnershipTransferred(uint256 indexed artifactId, address indexed from, address indexed to, uint256 price);
+    event ArtifactVerified(
+        uint256 indexed artifactId, 
+        address indexed verifier
+    );
+    
+    event OwnershipTransferred(
+        uint256 indexed artifactId, 
+        address indexed from, 
+        address indexed to, 
+        uint256 price
+    );
+    
     event VerifierAuthorized(address indexed verifier);
     event VerifierRevoked(address indexed verifier);
     
+    // ============================================
+    // ERRORS (Gas efficient alternative to require strings)
+    // ============================================
+    
+    error OnlyAdmin();
+    error OnlyVerifier();
+    error OnlyArtifactOwner();
+    error InvalidArtifactId();
+    error AlreadyVerified();
+    error InvalidAddress();
+    error CannotTransferToSelf();
+    error VerifierAlreadyAuthorized();
+    error VerifierNotAuthorized();
+    error CannotRevokeAdmin();
+    
+    // ============================================
+    // MODIFIERS
+    // ============================================
+    
     modifier onlyAdmin() {
-        require(msg.sender == admin, "Only admin can perform this action");
+        if (msg.sender != admin) revert OnlyAdmin();
         _;
     }
     
     modifier onlyVerifier() {
-        require(authorizedVerifiers[msg.sender], "Only authorized verifiers can perform this action");
+        if (!authorizedVerifiers[msg.sender]) revert OnlyVerifier();
         _;
     }
     
     modifier onlyArtifactOwner(uint256 _artifactId) {
-        require(artifacts[_artifactId].currentOwner == msg.sender, "Only artifact owner can perform this action");
+        if (artifacts[_artifactId].currentOwner != msg.sender) revert OnlyArtifactOwner();
         _;
     }
+    
+    modifier validArtifactId(uint256 _artifactId) {
+        if (_artifactId == 0 || _artifactId > artifactCount) revert InvalidArtifactId();
+        _;
+    }
+    
+    // ============================================
+    // CONSTRUCTOR
+    // ============================================
     
     constructor() {
         admin = msg.sender;
         authorizedVerifiers[msg.sender] = true;
     }
+    
+    // ============================================
+    // EXTERNAL FUNCTIONS
+    // ============================================
     
     /**
      * @dev Register a new rare artifact on the blockchain
@@ -67,54 +135,57 @@ contract RareArtifactVerification {
      * @param _origin Geographic or cultural origin
      * @param _yearOfCreation Year the artifact was created
      * @param _ipfsHash IPFS hash for artifact documentation/images
+     * @return artifactId The ID of the newly registered artifact
      */
     function registerArtifact(
-        string memory _name,
-        string memory _description,
-        string memory _origin,
-        uint256 _yearOfCreation,
-        string memory _ipfsHash
-    ) public returns (uint256) {
-        artifactCount++;
+        string calldata _name,        // calldata saves gas vs memory
+        string calldata _description,
+        string calldata _origin,
+        uint96 _yearOfCreation,       // uint96 instead of uint256
+        string calldata _ipfsHash
+    ) external returns (uint256 artifactId) {
         
-        Artifact memory newArtifact = Artifact({
-            id: artifactCount,
-            name: _name,
-            description: _description,
-            origin: _origin,
-            yearOfCreation: _yearOfCreation,
-            currentOwner: msg.sender,
-            verifier: address(0),
-            verificationTimestamp: 0,
-            isVerified: false,
-            ipfsHash: _ipfsHash
-        });
+        // Use unchecked for counter increment (safe from overflow in practice)
+        unchecked {
+            artifactId = ++artifactCount;
+        }
         
-        artifacts[artifactCount] = newArtifact;
+        // Create artifact struct
+        Artifact storage newArtifact = artifacts[artifactId];
+        newArtifact.name = _name;
+        newArtifact.description = _description;
+        newArtifact.origin = _origin;
+        newArtifact.yearOfCreation = _yearOfCreation;
+        newArtifact.currentOwner = msg.sender;
+        newArtifact.ipfsHash = _ipfsHash;
+        // verifier, verificationTimestamp, and isVerified default to zero/false
         
         // Record initial ownership
-        ownershipHistory[artifactCount].push(OwnershipHistory({
+        ownershipHistory[artifactId].push(OwnershipHistory({
             owner: msg.sender,
-            timestamp: block.timestamp,
+            timestamp: uint40(block.timestamp),
             price: 0
         }));
         
-        emit ArtifactRegistered(artifactCount, _name, msg.sender);
-        
-        return artifactCount;
+        emit ArtifactRegistered(artifactId, _name, msg.sender);
     }
     
     /**
      * @dev Verify an artifact's authenticity (only authorized verifiers)
      * @param _artifactId ID of the artifact to verify
      */
-    function verifyArtifact(uint256 _artifactId) public onlyVerifier {
-        require(_artifactId > 0 && _artifactId <= artifactCount, "Invalid artifact ID");
-        require(!artifacts[_artifactId].isVerified, "Artifact already verified");
+    function verifyArtifact(uint256 _artifactId) 
+        external 
+        onlyVerifier 
+        validArtifactId(_artifactId) 
+    {
+        Artifact storage artifact = artifacts[_artifactId];
         
-        artifacts[_artifactId].isVerified = true;
-        artifacts[_artifactId].verifier = msg.sender;
-        artifacts[_artifactId].verificationTimestamp = block.timestamp;
+        if (artifact.isVerified) revert AlreadyVerified();
+        
+        artifact.isVerified = true;
+        artifact.verifier = msg.sender;
+        artifact.verificationTimestamp = uint40(block.timestamp);
         
         emit ArtifactVerified(_artifactId, msg.sender);
     }
@@ -129,10 +200,10 @@ contract RareArtifactVerification {
         uint256 _artifactId,
         address _newOwner,
         uint256 _price
-    ) public onlyArtifactOwner(_artifactId) {
-        require(_artifactId > 0 && _artifactId <= artifactCount, "Invalid artifact ID");
-        require(_newOwner != address(0), "Invalid new owner address");
-        require(_newOwner != msg.sender, "Cannot transfer to yourself");
+    ) external onlyArtifactOwner(_artifactId) validArtifactId(_artifactId) {
+        
+        if (_newOwner == address(0)) revert InvalidAddress();
+        if (_newOwner == msg.sender) revert CannotTransferToSelf();
         
         address previousOwner = artifacts[_artifactId].currentOwner;
         artifacts[_artifactId].currentOwner = _newOwner;
@@ -140,8 +211,8 @@ contract RareArtifactVerification {
         // Record ownership change
         ownershipHistory[_artifactId].push(OwnershipHistory({
             owner: _newOwner,
-            timestamp: block.timestamp,
-            price: _price
+            timestamp: uint40(block.timestamp),
+            price: uint216(_price)  // Safe cast: validate if needed for your use case
         }));
         
         emit OwnershipTransferred(_artifactId, previousOwner, _newOwner, _price);
@@ -151,9 +222,9 @@ contract RareArtifactVerification {
      * @dev Authorize a new verifier (only admin)
      * @param _verifier Address of the verifier to authorize
      */
-    function authorizeVerifier(address _verifier) public onlyAdmin {
-        require(_verifier != address(0), "Invalid verifier address");
-        require(!authorizedVerifiers[_verifier], "Verifier already authorized");
+    function authorizeVerifier(address _verifier) external onlyAdmin {
+        if (_verifier == address(0)) revert InvalidAddress();
+        if (authorizedVerifiers[_verifier]) revert VerifierAlreadyAuthorized();
         
         authorizedVerifiers[_verifier] = true;
         emit VerifierAuthorized(_verifier);
@@ -163,60 +234,85 @@ contract RareArtifactVerification {
      * @dev Revoke verifier authorization (only admin)
      * @param _verifier Address of the verifier to revoke
      */
-    function revokeVerifier(address _verifier) public onlyAdmin {
-        require(authorizedVerifiers[_verifier], "Verifier not authorized");
-        require(_verifier != admin, "Cannot revoke admin");
+    function revokeVerifier(address _verifier) external onlyAdmin {
+        if (!authorizedVerifiers[_verifier]) revert VerifierNotAuthorized();
+        if (_verifier == admin) revert CannotRevokeAdmin();
         
         authorizedVerifiers[_verifier] = false;
         emit VerifierRevoked(_verifier);
     }
     
+    // ============================================
+    // VIEW FUNCTIONS
+    // ============================================
+    
     /**
      * @dev Get complete artifact information
      * @param _artifactId ID of the artifact
+     * @return artifact The complete artifact struct
      */
-    function getArtifact(uint256 _artifactId) public view returns (
-        uint256 id,
-        string memory name,
-        string memory description,
-        string memory origin,
-        uint256 yearOfCreation,
-        address currentOwner,
-        address verifier,
-        uint256 verificationTimestamp,
-        bool isVerified,
-        string memory ipfsHash
-    ) {
-        require(_artifactId > 0 && _artifactId <= artifactCount, "Invalid artifact ID");
-        Artifact memory artifact = artifacts[_artifactId];
-        
-        return (
-            artifact.id,
-            artifact.name,
-            artifact.description,
-            artifact.origin,
-            artifact.yearOfCreation,
-            artifact.currentOwner,
-            artifact.verifier,
-            artifact.verificationTimestamp,
-            artifact.isVerified,
-            artifact.ipfsHash
-        );
+    function getArtifact(uint256 _artifactId) 
+        external 
+        view 
+        validArtifactId(_artifactId)
+        returns (Artifact memory artifact) 
+    {
+        return artifacts[_artifactId];
     }
     
     /**
      * @dev Get ownership history of an artifact
      * @param _artifactId ID of the artifact
+     * @return history Array of ownership records
      */
-    function getOwnershipHistory(uint256 _artifactId) public view returns (OwnershipHistory[] memory) {
-        require(_artifactId > 0 && _artifactId <= artifactCount, "Invalid artifact ID");
+    function getOwnershipHistory(uint256 _artifactId) 
+        external 
+        view 
+        validArtifactId(_artifactId)
+        returns (OwnershipHistory[] memory history) 
+    {
         return ownershipHistory[_artifactId];
     }
     
     /**
      * @dev Get total number of artifacts registered
+     * @return Total artifact count
      */
-    function getTotalArtifacts() public view returns (uint256) {
+    function getTotalArtifacts() external view returns (uint256) {
         return artifactCount;
+    }
+    
+    /**
+     * @dev Check if an address is an authorized verifier
+     * @param _address Address to check
+     * @return bool True if authorized
+     */
+    function isAuthorizedVerifier(address _address) external view returns (bool) {
+        return authorizedVerifiers[_address];
+    }
+    
+    /**
+     * @dev Get artifact verification status
+     * @param _artifactId ID of the artifact
+     * @return isVerified Whether the artifact is verified
+     * @return verifier Address of the verifier (if verified)
+     * @return timestamp Verification timestamp (if verified)
+     */
+    function getVerificationStatus(uint256 _artifactId) 
+        external 
+        view 
+        validArtifactId(_artifactId)
+        returns (
+            bool isVerified,
+            address verifier,
+            uint256 timestamp
+        ) 
+    {
+        Artifact storage artifact = artifacts[_artifactId];
+        return (
+            artifact.isVerified,
+            artifact.verifier,
+            artifact.verificationTimestamp
+        );
     }
 }
