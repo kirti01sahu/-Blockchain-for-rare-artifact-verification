@@ -8,9 +8,9 @@ pragma solidity ^0.8.0;
  */
 contract RareArtifactVerification {
     
-    // ============================================
+    
     // STATE VARIABLES
-    // ============================================
+    
     
     /// @notice Admin address with special privileges
     address public immutable admin;
